@@ -25,9 +25,13 @@ AndroidAudioRecorder::AndroidAudioRecorder(
       ->setDataCallback(this)
       ->setSampleRate(static_cast<int>(sampleRate))
       ->openStream(mStream_);
+
+  nativeAudioRecorder_ = jni::make_global(NativeAudioRecorder::create());
 }
 
 AndroidAudioRecorder::~AndroidAudioRecorder() {
+  nativeAudioRecorder_.release();
+
   if (mStream_) {
     mStream_->requestStop();
     mStream_->close();
@@ -41,6 +45,7 @@ void AndroidAudioRecorder::start() {
   }
 
   if (mStream_) {
+    nativeAudioRecorder_->start();
     mStream_->requestStart();
   }
 
@@ -55,6 +60,7 @@ void AndroidAudioRecorder::stop() {
   isRunning_.store(false);
 
   if (mStream_) {
+    nativeAudioRecorder_->stop();
     mStream_->requestStop();
   }
 
