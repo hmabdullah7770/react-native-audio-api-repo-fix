@@ -8,10 +8,29 @@ import {
   WindowType,
 } from './types';
 
-export type ShareableWorkletCallback = (
-  audioBuffers: Array<ArrayBuffer>,
+export type WorkletNodeCallback = (
+  audioData: Array<ArrayBuffer>,
   channelCount: number
 ) => void;
+
+export type WorkletSourceNodeCallback = (
+  audioData: Array<ArrayBuffer>,
+  framesToProcess: number,
+  currentTime: number,
+  startOffset: number
+) => void;
+
+export type WorkletProcessingNodeCallback = (
+  inputData: Array<ArrayBuffer>,
+  outputData: Array<ArrayBuffer>,
+  framesToProcess: number,
+  currentTime: number
+) => void;
+
+export type ShareableWorkletCallback =
+  | WorkletNodeCallback
+  | WorkletSourceNodeCallback
+  | WorkletProcessingNodeCallback;
 
 export interface IBaseAudioContext {
   readonly destination: IAudioDestinationNode;
@@ -20,11 +39,20 @@ export interface IBaseAudioContext {
   readonly currentTime: number;
 
   createRecorderAdapter(): IRecorderAdapterNode;
+  createWorkletSourceNode(
+    shareableWorklet: ShareableWorkletCallback,
+    shouldUseUiRuntime: boolean
+  ): IWorkletSourceNode;
   createWorkletNode(
     shareableWorklet: ShareableWorkletCallback,
+    shouldUseUiRuntime: boolean,
     bufferLength: number,
     inputChannelCount: number
   ): IWorkletNode;
+  createWorkletProcessingNode(
+    shareableWorklet: ShareableWorkletCallback,
+    shouldUseUiRuntime: boolean
+  ): IWorkletProcessingNode;
   createOscillator(): IOscillatorNode;
   createConstantSource(): IConstantSourceNode;
   createGain(): IGainNode;
@@ -221,6 +249,10 @@ export interface IAnalyserNode extends IAudioNode {
 export interface IRecorderAdapterNode extends IAudioNode {}
 
 export interface IWorkletNode extends IAudioNode {}
+
+export interface IWorkletSourceNode extends IAudioScheduledSourceNode {}
+
+export interface IWorkletProcessingNode extends IAudioNode {}
 
 export interface IAudioRecorder {
   start: () => void;
