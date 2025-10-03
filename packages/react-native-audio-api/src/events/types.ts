@@ -57,6 +57,7 @@ export interface OnAudioReadyEventType {
 
 interface AudioAPIEvents {
   ended: OnEndedEventType;
+  loopEnded: EventEmptyType;
   audioReady: OnAudioReadyEventType;
   positionChanged: EventTypeWithValue;
   audioError: EventEmptyType; // to change
