@@ -54,6 +54,20 @@ class AudioAPIModuleInstaller {
             const jsi::Value &thisValue,
             const jsi::Value *args,
             size_t count) -> jsi::Value {
+          
+          // Validate argument count
+          if (count < 2) {
+            throw jsi::JSError(runtime, "createAudioContext requires at least 2 arguments");
+          }
+
+          // Validate arguments
+          if (!args[0].isNumber()) {
+            throw jsi::JSError(runtime, "First argument (sampleRate) must be a number");
+          }
+          if (!args[1].isBool()) {
+            throw jsi::JSError(runtime, "Second argument (initSuspended) must be a boolean");
+          }
+
           std::shared_ptr<AudioContext> audioContext;
           auto sampleRate = static_cast<float>(args[0].getNumber());
           auto initSuspended = args[1].getBool();
@@ -67,12 +81,16 @@ class AudioAPIModuleInstaller {
               auto runtimeRegistry = RuntimeRegistry{};
           #endif
 
-          audioContext = std::make_shared<AudioContext>(sampleRate, initSuspended, audioEventHandlerRegistry, runtimeRegistry);
-          auto audioContextHostObject = std::make_shared<AudioContextHostObject>(
-              audioContext, &runtime, jsCallInvoker);
+          try {
+            audioContext = std::make_shared<AudioContext>(sampleRate, initSuspended, audioEventHandlerRegistry, runtimeRegistry);
+            auto audioContextHostObject = std::make_shared<AudioContextHostObject>(
+                audioContext, &runtime, jsCallInvoker);
 
-          return jsi::Object::createFromHostObject(
-              runtime, audioContextHostObject);
+            return jsi::Object::createFromHostObject(
+                runtime, audioContextHostObject);
+          } catch (const std::exception& e) {
+            throw jsi::JSError(runtime, std::string("Failed to create AudioContext: ") + e.what());
+          }
         });
   }
 
@@ -90,6 +108,23 @@ class AudioAPIModuleInstaller {
             const jsi::Value &thisValue,
             const jsi::Value *args,
             size_t count) -> jsi::Value {
+            
+            // Validate argument count
+            if (count < 3) {
+              throw jsi::JSError(runtime, "createOfflineAudioContext requires at least 3 arguments");
+            }
+
+            // Validate arguments
+            if (!args[0].isNumber()) {
+              throw jsi::JSError(runtime, "First argument (numberOfChannels) must be a number");
+            }
+            if (!args[1].isNumber()) {
+              throw jsi::JSError(runtime, "Second argument (length) must be a number");
+            }
+            if (!args[2].isNumber()) {
+              throw jsi::JSError(runtime, "Third argument (sampleRate) must be a number");
+            }
+
             auto numberOfChannels = static_cast<int>(args[0].getNumber());
             auto length = static_cast<size_t>(args[1].getNumber());
             auto sampleRate = static_cast<float>(args[2].getNumber());
@@ -100,15 +135,19 @@ class AudioAPIModuleInstaller {
                     .audioRuntime = worklets::extractWorkletRuntime(runtime, args[3])
                 };
             #else
-            auto runtimeRegistry = RuntimeRegistry{};
+                auto runtimeRegistry = RuntimeRegistry{};
             #endif
 
-            auto offlineAudioContext = std::make_shared<OfflineAudioContext>(numberOfChannels, length, sampleRate, audioEventHandlerRegistry, runtimeRegistry);
-            auto audioContextHostObject = std::make_shared<OfflineAudioContextHostObject>(
-                offlineAudioContext, &runtime, jsCallInvoker);
+            try {
+              auto offlineAudioContext = std::make_shared<OfflineAudioContext>(numberOfChannels, length, sampleRate, audioEventHandlerRegistry, runtimeRegistry);
+              auto audioContextHostObject = std::make_shared<OfflineAudioContextHostObject>(
+                  offlineAudioContext, &runtime, jsCallInvoker);
 
-            return jsi::Object::createFromHostObject(
-                runtime, audioContextHostObject);
+              return jsi::Object::createFromHostObject(
+                  runtime, audioContextHostObject);
+            } catch (const std::exception& e) {
+              throw jsi::JSError(runtime, std::string("Failed to create OfflineAudioContext: ") + e.what());
+            }
         });
   }
 
@@ -124,14 +163,41 @@ class AudioAPIModuleInstaller {
             const jsi::Value &thisValue,
             const jsi::Value *args,
             size_t count) -> jsi::Value {
+          
+          // Validate argument count
+          if (count < 1) {
+            throw jsi::JSError(runtime, "createAudioRecorder requires 1 argument (options object)");
+          }
+
+          // Validate argument is an object
+          if (!args[0].isObject()) {
+            throw jsi::JSError(runtime, "createAudioRecorder argument must be an object");
+          }
+
           auto options = args[0].getObject(runtime);
 
-          auto sampleRate = static_cast<float>(options.getProperty(runtime, "sampleRate").getNumber());
-          auto bufferLength = static_cast<int>(options.getProperty(runtime, "bufferLengthInSamples").getNumber());
+          // Validate sampleRate exists and is a number
+          auto sampleRateProp = options.getProperty(runtime, "sampleRate");
+          if (sampleRateProp.isUndefined() || !sampleRateProp.isNumber()) {
+            throw jsi::JSError(runtime, "options.sampleRate must be a number");
+          }
+          auto sampleRate = static_cast<float>(sampleRateProp.getNumber());
 
-          auto audioRecorderHostObject = std::make_shared<AudioRecorderHostObject>(audioEventHandlerRegistry, sampleRate, bufferLength);
+          // Validate bufferLengthInSamples exists and is a number
+          auto bufferLengthProp = options.getProperty(runtime, "bufferLengthInSamples");
+          if (bufferLengthProp.isUndefined() || !bufferLengthProp.isNumber()) {
+            throw jsi::JSError(runtime, "options.bufferLengthInSamples must be a number");
+          }
+          auto bufferLength = static_cast<int>(bufferLengthProp.getNumber());
 
-          return jsi::Object::createFromHostObject(runtime, audioRecorderHostObject);
+          try {
+            auto audioRecorderHostObject = std::make_shared<AudioRecorderHostObject>(
+              audioEventHandlerRegistry, sampleRate, bufferLength);
+
+            return jsi::Object::createFromHostObject(runtime, audioRecorderHostObject);
+          } catch (const std::exception& e) {
+            throw jsi::JSError(runtime, std::string("Failed to create AudioRecorder: ") + e.what());
+          }
         });
   }
 };
