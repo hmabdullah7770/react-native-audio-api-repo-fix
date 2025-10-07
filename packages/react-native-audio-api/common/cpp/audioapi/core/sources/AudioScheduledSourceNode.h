@@ -10,6 +10,7 @@
 #include <limits>
 #include <memory>
 #include <thread>
+#include <mutex>
 #include <cstddef>
 #include <cassert>
 #include <utility>
@@ -26,6 +27,7 @@ class AudioScheduledSourceNode : public AudioNode {
   // STOP_SCHEDULED: The node is scheduled to stop at a specific time, but is still playing.
   // FINISHED: The node has finished playing.
   enum class PlaybackState { UNSCHEDULED, SCHEDULED, PLAYING, STOP_SCHEDULED, FINISHED };
+  
   explicit AudioScheduledSourceNode(BaseAudioContext *context);
   ~AudioScheduledSourceNode() override;
 
@@ -44,12 +46,16 @@ class AudioScheduledSourceNode : public AudioNode {
   void disable() override;
 
  protected:
-  double startTime_;
-  double stopTime_;
+  std::atomic<double> startTime_{0.0};
+  std::atomic<double> stopTime_{std::numeric_limits<double>::infinity()};
 
-  PlaybackState playbackState_;
+  // CRITICAL FIX: Make playbackState_ atomic for thread safety
+  std::atomic<PlaybackState> playbackState_{PlaybackState::UNSCHEDULED};
 
-  std::atomic<uint64_t> onEndedCallbackId_ = 0;
+  std::atomic<uint64_t> onEndedCallbackId_{0};
+
+  // CRITICAL FIX: Add mutex for state transitions
+  mutable std::mutex stateMutex_;
 
   void updatePlaybackInfo(
       const std::shared_ptr<AudioBus>& processingBus,
@@ -58,6 +64,10 @@ class AudioScheduledSourceNode : public AudioNode {
       size_t &nonSilentFramesToProcess);
 
   void handleStopScheduled();
+
+  // Helper method for thread-safe state changes
+  void setPlaybackState(PlaybackState newState);
+  PlaybackState getPlaybackState() const;
 };
 
 } // namespace audioapi

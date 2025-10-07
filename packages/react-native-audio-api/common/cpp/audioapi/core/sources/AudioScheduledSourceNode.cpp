@@ -1,179 +1,159 @@
-#include <audioapi/core/BaseAudioContext.h>
-#include <audioapi/core/sources/AudioScheduledSourceNode.h>
-#include <audioapi/core/utils/AudioNodeManager.h>
-#include <audioapi/dsp/AudioUtils.h>
+#include <audioapi/HostObjects/inputs/AudioRecorderHostObject.h>
+
+#include <audioapi/HostObjects/sources/AudioBufferHostObject.h>
+#include <audioapi/HostObjects/sources/RecorderAdapterNodeHostObject.h>
+#include <audioapi/core/inputs/AudioRecorder.h>
+#include <audioapi/core/sources/AudioBuffer.h>
 #include <audioapi/events/AudioEventHandlerRegistry.h>
-#include <audioapi/utils/AudioArray.h>
-#include <audioapi/utils/AudioBus.h>
+#ifdef ANDROID
+#include <audioapi/android/core/AndroidAudioRecorder.h>
+#else
+#include <audioapi/ios/core/IOSAudioRecorder.h>
+#endif
 
 namespace audioapi {
 
-AudioScheduledSourceNode::AudioScheduledSourceNode(BaseAudioContext *context)
-    : AudioNode(context),
-      startTime_(-1.0),
-      stopTime_(-1.0),
-      playbackState_(PlaybackState::UNSCHEDULED) {
-  numberOfInputs_ = 0;
-}
-
-AudioScheduledSourceNode::~AudioScheduledSourceNode() {
-  clearOnEndedCallback();
-}
-
-void AudioScheduledSourceNode::start(double when) {
-  playbackState_ = PlaybackState::SCHEDULED;
-  startTime_ = when;
-}
-
-void AudioScheduledSourceNode::stop(double when) {
-  stopTime_ = when;
-}
-
-bool AudioScheduledSourceNode::isUnscheduled() {
-  return playbackState_ == PlaybackState::UNSCHEDULED;
-}
-
-bool AudioScheduledSourceNode::isScheduled() {
-  return playbackState_ == PlaybackState::SCHEDULED;
-}
-
-bool AudioScheduledSourceNode::isPlaying() {
-  return playbackState_ == PlaybackState::PLAYING;
-}
-
-bool AudioScheduledSourceNode::isFinished() {
-  return playbackState_ == PlaybackState::FINISHED;
-}
-
-bool AudioScheduledSourceNode::isStopScheduled() {
-  return playbackState_ == PlaybackState::STOP_SCHEDULED;
-}
-
-void AudioScheduledSourceNode::clearOnEndedCallback() {
-  if (onEndedCallbackId_ == 0 || context_ == nullptr ||
-      context_->audioEventHandlerRegistry_ == nullptr) {
-    return;
+AudioRecorderHostObject::AudioRecorderHostObject(
+    const std::shared_ptr<AudioEventHandlerRegistry> &audioEventHandlerRegistry,
+    float sampleRate,
+    int bufferLength) {
+  
+  // Validate inputs
+  if (!audioEventHandlerRegistry) {
+    throw std::runtime_error("AudioEventHandlerRegistry cannot be null");
+  }
+  
+  if (sampleRate <= 0 || sampleRate > 192000) {
+    throw std::runtime_error("Invalid sampleRate: must be between 0 and 192000");
+  }
+  
+  if (bufferLength <= 0) {
+    throw std::runtime_error("Invalid bufferLength: must be greater than 0");
   }
 
-  context_->audioEventHandlerRegistry_->unregisterHandler(
-      "ended", onEndedCallbackId_);
-  onEndedCallbackId_ = 0;
-}
+  try {
+#ifdef ANDROID
+    audioRecorder_ = std::make_shared<AndroidAudioRecorder>(
+        sampleRate, bufferLength, audioEventHandlerRegistry);
+#else
+    audioRecorder_ = std::make_shared<IOSAudioRecorder>(
+        sampleRate, bufferLength, audioEventHandlerRegistry);
+#endif
 
-void AudioScheduledSourceNode::setOnEndedCallbackId(const uint64_t callbackId) {
-  onEndedCallbackId_ = callbackId;
-}
-
-void AudioScheduledSourceNode::updatePlaybackInfo(
-    const std::shared_ptr<AudioBus> &processingBus,
-    int framesToProcess,
-    size_t &startOffset,
-    size_t &nonSilentFramesToProcess) {
-  if (!isInitialized_) {
-    startOffset = 0;
-    nonSilentFramesToProcess = 0;
-    return;
-  }
-
-  assert(context_ != nullptr);
-
-  auto sampleRate = context_->getSampleRate();
-
-  size_t firstFrame = context_->getCurrentSampleFrame();
-  size_t lastFrame = firstFrame + framesToProcess;
-
-  size_t startFrame =
-      std::max(dsp::timeToSampleFrame(startTime_, sampleRate), firstFrame);
-  size_t stopFrame = stopTime_ == -1.0
-      ? std::numeric_limits<size_t>::max()
-      : dsp::timeToSampleFrame(stopTime_, sampleRate);
-
-  if (isFinished()) {
-    startOffset = 0;
-    nonSilentFramesToProcess = 0;
-    return;
-  }
-
-  if (isScheduled()) {
-    // not yet playing
-    if (startFrame > lastFrame) {
-      startOffset = 0;
-      nonSilentFramesToProcess = 0;
-      return;
+    if (!audioRecorder_) {
+      throw std::runtime_error("Failed to create audio recorder instance");
     }
 
-    // start playing
-    // zero first frames before starting frame
-    playbackState_ = PlaybackState::PLAYING;
-    startOffset = std::max(startFrame, firstFrame) - firstFrame > 0
-        ? std::max(startFrame, firstFrame) - firstFrame
-        : 0;
-    nonSilentFramesToProcess =
-        std::max(std::min(lastFrame, stopFrame), startFrame) - startFrame;
+    addSetters(JSI_EXPORT_PROPERTY_SETTER(AudioRecorderHostObject, onAudioReady));
 
-    assert(startOffset <= framesToProcess);
-    assert(nonSilentFramesToProcess <= framesToProcess);
+    addFunctions(
+        JSI_EXPORT_FUNCTION(AudioRecorderHostObject, start),
+        JSI_EXPORT_FUNCTION(AudioRecorderHostObject, stop),
+        JSI_EXPORT_FUNCTION(AudioRecorderHostObject, connect),
+        JSI_EXPORT_FUNCTION(AudioRecorderHostObject, disconnect));
+  } catch (const std::exception& e) {
+    throw std::runtime_error(std::string("Failed to initialize AudioRecorder: ") + e.what());
+  }
+}
 
-    // stop will happen in the same render quantum
-    if (stopFrame <= lastFrame && stopFrame >= firstFrame) {
-      playbackState_ = PlaybackState::STOP_SCHEDULED;
-      processingBus->zero(stopFrame - firstFrame, lastFrame - stopFrame);
+JSI_PROPERTY_SETTER_IMPL(AudioRecorderHostObject, onAudioReady) {
+  if (!audioRecorder_) {
+    throw jsi::JSError(runtime, "AudioRecorder is not initialized");
+  }
+
+  if (!value.isString()) {
+    throw jsi::JSError(runtime, "onAudioReady callback ID must be a string");
+  }
+
+  try {
+    auto callbackIdStr = value.getString(runtime).utf8(runtime);
+    auto callbackId = std::stoull(callbackIdStr);
+    audioRecorder_->setOnAudioReadyCallbackId(callbackId);
+  } catch (const std::exception& e) {
+    throw jsi::JSError(runtime, std::string("Failed to set onAudioReady callback: ") + e.what());
+  }
+}
+
+JSI_HOST_FUNCTION_IMPL(AudioRecorderHostObject, connect) {
+  if (!audioRecorder_) {
+    throw jsi::JSError(runtime, "AudioRecorder is not initialized");
+  }
+
+  // Validate arguments
+  if (count < 1) {
+    throw jsi::JSError(runtime, "connect() requires 1 argument");
+  }
+
+  if (!args[0].isObject()) {
+    throw jsi::JSError(runtime, "connect() argument must be an object");
+  }
+
+  try {
+    auto argObject = args[0].getObject(runtime);
+    
+    // Check if the object has a host object
+    if (!argObject.isHostObject(runtime)) {
+      throw jsi::JSError(runtime, "connect() argument must be a RecorderAdapterNode");
     }
 
-    processingBus->zero(0, startOffset);
-    return;
-  }
+    auto adapterNodeHostObject = argObject.getHostObject<RecorderAdapterNodeHostObject>(runtime);
+    
+    if (!adapterNodeHostObject) {
+      throw jsi::JSError(runtime, "Failed to get RecorderAdapterNodeHostObject");
+    }
 
-  // the node is playing
+    if (!adapterNodeHostObject->node_) {
+      throw jsi::JSError(runtime, "RecorderAdapterNode is not initialized");
+    }
 
-  // stop will happen in this render quantum
-  // zero remaining frames after stop frame
-  if (stopFrame < lastFrame && stopFrame >= firstFrame) {
-    playbackState_ = PlaybackState::STOP_SCHEDULED;
-    startOffset = 0;
-    nonSilentFramesToProcess = stopFrame - firstFrame;
-
-    assert(startOffset <= framesToProcess);
-    assert(nonSilentFramesToProcess <= framesToProcess);
-
-    processingBus->zero(stopFrame - firstFrame, lastFrame - stopFrame);
-    return;
-  }
-
-  // mark as finished in first silent render quantum
-  if (stopFrame < firstFrame) {
-    startOffset = 0;
-    nonSilentFramesToProcess = 0;
-
-    playbackState_ = PlaybackState::STOP_SCHEDULED;
-    handleStopScheduled();
-    return;
-  }
-
-  if (isUnscheduled()) {
-    startOffset = 0;
-    nonSilentFramesToProcess = 0;
-    return;
-  }
-
-  // normal "mid-buffer" playback
-  startOffset = 0;
-  nonSilentFramesToProcess = framesToProcess;
-}
-
-void AudioScheduledSourceNode::disable() {
-  AudioNode::disable();
-
-  if (context_->audioEventHandlerRegistry_ != nullptr) {
-    context_->audioEventHandlerRegistry_->invokeHandlerWithEventBody(
-        "ended", onEndedCallbackId_, {});
+    audioRecorder_->connect(
+        std::static_pointer_cast<RecorderAdapterNode>(
+            adapterNodeHostObject->node_));
+    
+    return jsi::Value::undefined();
+  } catch (const jsi::JSError&) {
+    throw; // Re-throw JSErrors as-is
+  } catch (const std::exception& e) {
+    throw jsi::JSError(runtime, std::string("Failed to connect: ") + e.what());
   }
 }
 
-void AudioScheduledSourceNode::handleStopScheduled() {
-  if (isStopScheduled()) {
-    playbackState_ = PlaybackState::FINISHED;
-    disable();
+JSI_HOST_FUNCTION_IMPL(AudioRecorderHostObject, disconnect) {
+  if (!audioRecorder_) {
+    throw jsi::JSError(runtime, "AudioRecorder is not initialized");
+  }
+
+  try {
+    audioRecorder_->disconnect();
+    return jsi::Value::undefined();
+  } catch (const std::exception& e) {
+    throw jsi::JSError(runtime, std::string("Failed to disconnect: ") + e.what());
+  }
+}
+
+JSI_HOST_FUNCTION_IMPL(AudioRecorderHostObject, start) {
+  if (!audioRecorder_) {
+    throw jsi::JSError(runtime, "AudioRecorder is not initialized");
+  }
+
+  try {
+    audioRecorder_->start();
+    return jsi::Value::undefined();
+  } catch (const std::exception& e) {
+    throw jsi::JSError(runtime, std::string("Failed to start recording: ") + e.what());
+  }
+}
+
+JSI_HOST_FUNCTION_IMPL(AudioRecorderHostObject, stop) {
+  if (!audioRecorder_) {
+    throw jsi::JSError(runtime, "AudioRecorder is not initialized");
+  }
+
+  try {
+    audioRecorder_->stop();
+    return jsi::Value::undefined();
+  } catch (const std::exception& e) {
+    throw jsi::JSError(runtime, std::string("Failed to stop recording: ") + e.what());
   }
 }
 
